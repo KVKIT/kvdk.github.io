@@ -1,9 +1,20 @@
 # Welcome to Dark Arts 101 - C++ Alignment and Allocator
 
+## TL;DR
+1. Use `aligned_alloc` for vector types such as `__m256i`. Or use C++17.
+2. Use `aligned_alloc` for over-aligned types specified with `alignas`. Or use C++17.
+3. Never use `malloc`, `::operator new(size_t)` to dynamically allocate space for over-aligned types.
+
 ## 1. Introduction
 Alignment of objects is important in C++. Compilers align basic types and user-defined types to meet requirements of hardware and improve performance.
 
 However, some types may "over-align" than 8-byte or 16-byte boundary, which may cause error when used together with `::operator new` or STL containers.
+
+Before C++17, a common mistake for beginner programmers is to use vector types such as `__m256i` introduced by SIMD instructions together with STL containers that dynamically allocate space, such as `std::vector`. Luckily, with the introduction of C++17, it is no longer the case.
+
+Another less common mistake is to use over-aligned types together with STL constainers that have dynamic storage, or use `malloc` or `::operator new` to allocate space for them. An over-aligned type is a type with alignment stricter than 8 or 16 bytes, dependent on platform and compiler.
+
+Now let us go all the way down the rabbit hole, to see what actually happens when we mix over-aligned types(including vector types) and allocation functions like `malloc` and `::operator new`.
 
 ## 2. Specifier `alignas` and `alignof`
 Since C++11, user can use `alignas` specifier to specify the alignment of an expression or a user-defined type.
@@ -173,7 +184,7 @@ If we disassembles the code compiled with `g++-11 -std=c++11 -O2 -mavx2`, we can
 ```asm
 0000000000000b80 <main>:
  b80:	55                   	push   %rbp
- b81:	c5 f9 ef c0          	vpxor  %xmm0,%xmm0,%xmm0    
+ b81:	c5 f9 ef c0          	vpxor  %xmm0,%xmm0,%xmm0    # zeroing %xmm0, also %ymm0
  b85:	bf 00 02 00 00       	mov    $0x200,%edi          # 512(B) = 16 * 32(B)
  b8a:	48 89 e5             	mov    %rsp,%rbp
  b8d:	41 56                	push   %r14
@@ -181,14 +192,14 @@ If we disassembles the code compiled with `g++-11 -std=c++11 -O2 -mavx2`, we can
  b91:	41 54                	push   %r12
  b93:	48 83 e4 e0          	and    $0xffffffffffffffe0,%rsp
  b97:	48 83 ec 40          	sub    $0x40,%rsp
- b9b:	64 48 8b 04 25 28 00 	mov    %fs:0x28,%rax
+ b9b:	64 48 8b 04 25 28 00 	mov    %fs:0x28,%rax        # stack-guard
  ba2:	00 00 
  ba4:	48 89 44 24 38       	mov    %rax,0x38(%rsp)
  ba9:	31 c0                	xor    %eax,%eax
- bab:	c5 fd 7f 04 24       	vmovdqa %ymm0,(%rsp)
+ bab:	c5 fd 7f 04 24       	vmovdqa %ymm0,(%rsp)        # zeroing [%rsp,%rsp+32]
  bb0:	c5 f8 77             	vzeroupper 
  bb3:	e8 38 ff ff ff       	callq  af0 <_Znwm@plt>      # Call ::operator new with parameter %rdi = 512
- bb8:	c5 f9 ef c0          	vpxor  %xmm0,%xmm0,%xmm0    # Set %xmm0, also %ymm0 to zeros
+ bb8:	c5 f9 ef c0          	vpxor  %xmm0,%xmm0,%xmm0    # zeroing %xmm0, also %ymm0
  bbc:	49 89 c4             	mov    %rax,%r12
  bbf:	c5 fd 7f 00          	vmovdqa %ymm0,(%rax)        # Set vec[0] to zeros, may trigger segfault
  bc3:	48 83 c0 20          	add    $0x20,%rax
@@ -203,7 +214,7 @@ Instruction `vmovdqa` stores 256-bits of interger data to memory. It requires th
 ### Note
 Different compilers generate different optimized code for `memset`. For example, we observe GCC 8.4.0 using `vmovdqa` to zero-fill space allocated by `malloc` for an array of object specified with `alignas(64)`, and then triggers a segfault.
 
-## 5. Solution Compliant to C++ Standard
+## 5. Solutions Compliant to C++ Standard
 ### 5.1. Use C++ 17
 C++17 specifies that `std::allocator<T>::allocate(size_t)` will allocate uninitialized space with `::operator new(size_t, std::align_val_t)`, which means that STL containers such as `std::vector<T>`, with `std::allocator<T>` as default allocator, will respect over-alignment requirements specified by user. You can simply use `std::vector<__m256i>` without worrying about segfault triggered by `vmovdqa`.
 
@@ -255,7 +266,7 @@ int main()
 User may also use `aligned_alloc` to overload `operator new`, `operator delete` for classes with specific alignment requirements.
 
 ## 6. Conclusion
-1. Use `aligned_alloc` for SIMD types such as `__m256i`. Or use C++17.
+1. Use `aligned_alloc` for vector types such as `__m256i`. Or use C++17.
 2. Use `aligned_alloc` for over-aligned types specified with `alignas`. Or use C++17.
 3. Never use `malloc`, `::operator new(size_t)` to dynamically allocate space for over-aligned types.
 
